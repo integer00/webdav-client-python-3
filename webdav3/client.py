@@ -15,6 +15,8 @@ from webdav3.connection import *
 from webdav3.exceptions import *
 from webdav3.urn import Urn
 
+import hashlib
+
 try:
     from urllib.parse import unquote, urlsplit
 except ImportError:
@@ -84,7 +86,7 @@ class Client(object):
     root = '/'
 
     # request timeout in seconds
-    timeout = 30
+    timeout = 600
 
     # HTTP headers for different actions
     http_header = {
@@ -271,6 +273,7 @@ class Client(object):
             response = self.execute_request(action='check', path=urn.quote())
         except ResponseErrorCode:
             return False
+#
 
         if int(response.status_code) == 200:
             return True
@@ -676,6 +679,69 @@ class Client(object):
                     continue
                 self.upload_file(remote_path=remote_path, local_path=local_path)
 
+    def push_force(self, remote_directory, local_directory):
+        """
+        Validate remote folder with local via put method, check bit-bit and replace remote if mismatch
+        :param remote_directory:
+        :param local_directory:
+        :return:
+        """
+
+        def prune(src, exp):
+            return [sub(exp, "", item) for item in src]
+
+        urn = Urn(remote_directory, directory=True)
+
+        if not self.is_dir(urn.path()):
+            raise OptionNotValid(name="remote_path", value=remote_directory)
+
+        if not os.path.isdir(local_directory):
+            raise OptionNotValid(name="local_path", value=local_directory)
+
+        if not os.path.exists(local_directory):
+            raise LocalResourceNotFound(local_directory)
+
+        paths = self.list(urn.path())
+        paths_local = os.listdir(local_directory)
+        expression = "{begin}{end}".format(begin="^", end=urn.path())
+        remote_resource_names = prune(paths, expression)
+        local_resources = prune(paths_local,expression)
+
+
+
+        ##clean shit
+        for each in remote_resource_names:
+            remote_path = "{remote_directory}{resource_name}".format(remote_directory=urn.path(),
+                                                                     resource_name=each)
+            if each not in local_resources:
+                print("removing " + remote_path)
+                self.execute_request("clean", remote_path)
+            continue
+
+
+        for local_resource_name in listdir(local_directory):
+
+            local_path = os.path.join(local_directory, local_resource_name)
+            remote_path = "{remote_directory}{resource_name}".format(remote_directory=urn.path(),
+                                                                     resource_name=local_resource_name)
+
+            if os.path.isdir(local_path):
+                if not self.check(remote_path=remote_path):
+                    self.mkdir(remote_path=remote_path)
+                self.push_force(remote_directory=remote_path, local_directory=local_path)
+            else:
+                if local_resource_name in remote_resource_names:
+                    response = self.execute_request("check", remote_path)
+                    if os.path.isdir(local_path):
+                        continue
+                    local_hash = self.getHash(file=local_path)
+                    if (response.headers["ETag"] == local_hash):
+                        continue
+                    print("diff for  " + local_resource_name)
+                    self.upload_file(remote_path=remote_path, local_path=local_path)
+                print("uploading " + local_path)
+                self.upload_file(remote_path=remote_path, local_path=local_path)
+
     def pull(self, remote_directory, local_directory):
 
         def prune(src, exp):
@@ -716,6 +782,11 @@ class Client(object):
 
         self.pull(remote_directory=remote_directory, local_directory=local_directory)
         self.push(remote_directory=remote_directory, local_directory=local_directory)
+
+    def getHash(self, file):
+        with open(file,'rb') as f:
+
+            return hashlib.sha256(f.read()).hexdigest()[:32]
 
 
 class Resource(object):
@@ -793,6 +864,12 @@ class Resource(object):
     def property(self, option, value):
         option['value'] = value.__str__()
         self.client.set_property(remote_path=self.urn.path(), option=option)
+
+
+
+
+
+
 
 
 class WebDavXmlUtils:
